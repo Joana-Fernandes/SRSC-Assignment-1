@@ -1,0 +1,44 @@
+// SRSC 2324
+// A peergroup multicast chat-messaging system, using UDP and IP Multicast
+// How to use it  ?
+
+Run:
+
+java -Djava.net.preferIPv4Stack=true MChatCliente nickname mcast-addr porto
+// mcast-adr: must be an IP Multicasting address
+// porto: A UDP port
+
+nickname:   A nickname of user (ex., hj)
+
+mcast-addr: Multicast address, ex: 224.10.10.10 or
+            any address in th multicast address range
+	    (224.0.0.1 ... to 239.255.255.255)
+            This is of course using IPv4
+	    In fact the multicast address will be used as the chat room
+	    identifier
+
+
+porto:      Ca sue any port, ex: 9000 (porto UDP)
+
+// Note
+// Because the use of IPv4 for multicast sometimes is defined to use
+// IPv6 addressing, you must run the chat forcing the use of Ipv4
+// This can happen for dual stack OSes in more recent machines that
+// use the dual TCP/IP stack (IPv6 and IPv4)
+
+// Avoid to use 224.0.0.1 because it is a "special" loopback multicast
+// localhost address ...
+
+// How to force the use of IPV4 stack ?
+// Put th follopwing flag argument (option -D) when you run the code
+// -D is a property instructing the JVM to run the code with IPv4 stack
+
+//       -Djava.net.preferIPv4Stack=true
+
+Ex to run 
+java -Djava.net.preferIPv4Stack MChatCliente bob 224.4.4.4 9000
+
+or if by defult your JVM only adopts IPv4, can use simply
+
+java MChatCliente alice 224.4.4.4 9000
+
