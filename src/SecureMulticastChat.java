@@ -8,7 +8,10 @@ package src;
 
 import java.io.*;
 import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.Properties;
 import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
@@ -58,13 +61,18 @@ public class SecureMulticastChat extends Thread {
 
     //Security related variables
     protected Properties securityProps;
-    String encryptionAlg;
-    String nickHash;
-    String macAlgorithm;
-    SecretKey confidentialityKey;
-    SecretKey macKey;
-    IvParameterSpec ivSpec;
-    Cipher cipher;
+    private String encryptionAlg;
+    private String nickHash;
+    private String macAlgorithm;
+    private SecretKey confidentialityKey;
+    private SecretKey macKey;
+    private IvParameterSpec ivSpec;
+    private Cipher cipher;
+    private MessageDigest hash;
+
+
+    // Message Building related variables
+    private String header;
 
     // Multicast Chat-Messaging
     public SecureMulticastChat(String username, InetAddress group, int port,
@@ -89,7 +97,7 @@ public class SecureMulticastChat extends Thread {
         //Loading security setting from the config file
         securityProps = new Properties();
         try{
-            FileInputStream input = new FileInputStream("security.conf");
+            FileInputStream input = new FileInputStream("security.config");
             securityProps.load(input);
             input.close();
         } catch (IOException e) {
@@ -103,6 +111,10 @@ public class SecureMulticastChat extends Thread {
         this.confidentialityKey = getSecretKey(securityProps.getProperty("CONFIDENTIALITY-KEY"));
         this.macKey = getSecretKey(securityProps.getProperty("MACKEY"));
 
+        // Building Header
+        this.hash = MessageDigest.getInstance("SHA512");
+        hash.update(username.getBytes(StandardCharsets.UTF_8));
+        header = (short) 1 + CHAT_MAGIC_NUMBER + Arrays.toString(hash.digest());
 
         // start receive thread and send multicast join message
         start();
@@ -142,7 +154,7 @@ public class SecureMulticastChat extends Thread {
         msocket.send(packet);
     }
 
-    // Process recived JOIN message
+    // Process received JOIN message
     //
     protected void processJoin(DataInputStream istream, InetAddress address,
                                int port) throws IOException {
@@ -155,7 +167,6 @@ public class SecureMulticastChat extends Thread {
 
     // Send LEAVE
     protected void sendLeave() throws IOException {
-
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         DataOutputStream dataStream = new DataOutputStream(byteStream);
 
@@ -185,20 +196,46 @@ public class SecureMulticastChat extends Thread {
     //
     public void sendMessage(String message) throws IOException, Exception {
 
+        //TODO add dividers or maybe size of next read
+
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         DataOutputStream dataStream = new DataOutputStream(byteStream);
 
+
+        // writes the header
+        dataStream.writeShort(1);
         dataStream.writeLong(CHAT_MAGIC_NUMBER);
-        dataStream.writeInt(MESSAGE);
-        dataStream.writeUTF(username);
-        dataStream.writeUTF(message);
+        dataStream.write(hash.digest(username.getBytes(StandardCharsets.UTF_8)));
+
+
+        // the encryption of the message
 
         byte[] nonce = Utils.generateNonce();
-        byte[] encryptedMessage = encryptMessage(confidentialityKey, message);
 
-        //TODO complete message processing, still trying to understand mac proofs
+        StringBuilder toBeEncryptedPayload = new StringBuilder();
 
-        dataStream.write(nonce);
+        toBeEncryptedPayload
+                .append(username)       // sender name
+                .append("simple msg")   // message
+                .append(nonce)          // NONCE
+                .append(message);       // msg data
+
+        byte[] encryptedPayload = encryptMessage(confidentialityKey, toBeEncryptedPayload.toString());
+
+        dataStream.writeInt(encryptedPayload.length);
+        dataStream.write(encryptedPayload); // writes the message
+
+        // the HMAC proof
+        int size1 = header.getBytes(StandardCharsets.UTF_8).length;
+        int size2 = encryptedPayload.length;
+        byte [] ola = new byte[size1 + size2];
+
+        System.arraycopy(header.getBytes(StandardCharsets.UTF_8), 0, ola, 0,size1);
+        System.arraycopy(encryptedPayload, 0, ola, size1, size2);
+        byte[] HMAC = hash.digest(ola);
+
+        dataStream.writeInt(HMAC.length);
+        dataStream.write(HMAC); // writes the HMAC
         dataStream.close();
 
         byte[] data = byteStream.toByteArray();
@@ -212,6 +249,29 @@ public class SecureMulticastChat extends Thread {
     protected void processMessage(DataInputStream istream,
                                   InetAddress address,
                                   int port) throws IOException {
+
+        istream.readShort();
+        long receivedMagicNumber = istream.readLong();
+
+        if (receivedMagicNumber != CHAT_MAGIC_NUMBER) return;
+
+        byte[] usernameHashed = new byte[512]; // check the hash function
+        if (istream.read(usernameHashed, 0, 512) <= 0) return;
+        //maybe check if the hash is of the correct sender ???
+
+        int sizeOfEncryptedMessage = istream.readInt();
+        byte[] encryptedMessage = new byte[sizeOfEncryptedMessage];
+        if (istream.read(encryptedMessage, 0 , sizeOfEncryptedMessage) <= 0) return;
+
+        int sizeOfHMAC = istream.readInt();
+        byte[] HMAC = new byte[sizeOfHMAC];
+        if (istream.read(HMAC, 0 , sizeOfHMAC) <= 0) return;
+
+
+
+
+
+
         String username = istream.readUTF();
         String message = istream.readUTF();
 
@@ -241,6 +301,7 @@ public class SecureMulticastChat extends Thread {
                         new DataInputStream(new ByteArrayInputStream(packet.getData(),
                                 packet.getOffset(), packet.getLength()));
 
+                short version = istream.readShort();
                 long magic = istream.readLong();
 
                 // Only accepts CHAT-MAGIC-NUMBER of the Chat
