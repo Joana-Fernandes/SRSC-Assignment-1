@@ -16,6 +16,7 @@ import java.util.HashSet;
 import java.util.Properties;
 import java.util.Set;
 import javax.crypto.Cipher;
+import javax.crypto.Mac;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
@@ -276,12 +277,20 @@ public class SecureMulticastChat extends Thread {
         //Decrypting the payload to check the nonce
         byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
         byte[] nonce = Arrays.copyOfRange(decryptedPayload, 0, sizeOfNonce);
+        byte[] payloadMessage = Arrays.copyOfRange(decryptedPayload, sizeOfNonce, decryptedPayload.length);
 
         //Nonce verification
         if(nonces.contains(nonce)) return;
         nonces.add(nonce);
 
 
+        //HMAC verification
+        //Please do check for any errors here
+        Mac mac = Mac.getInstance(macAlgorithm);
+        mac.init(macKey);
+        byte[] calculatedHMAC = mac.doFinal(payloadMessage);
+
+        if(!MessageDigest.isEqual(calculatedHMAC, HMAC)) return;
 
 
         String username = istream.readUTF();
