@@ -12,7 +12,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Properties;
+import java.util.Set;
 import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
@@ -69,6 +71,7 @@ public class SecureMulticastChat extends Thread {
     private IvParameterSpec ivSpec;
     private Cipher cipher;
     private MessageDigest hash;
+    private Set<byte[]> nonces;
 
 
     // Message Building related variables
@@ -86,6 +89,7 @@ public class SecureMulticastChat extends Thread {
         //We may need to test out this cipher stuff
         this.ivSpec  = new IvParameterSpec(ivBytes);
         this.cipher  = Cipher.getInstance("AES/GCM/NoPadding");
+        this.nonces = new HashSet<>();
 
         // create & configure multicast socket
 
@@ -195,9 +199,6 @@ public class SecureMulticastChat extends Thread {
     // Send message to the chat-messaging room
     //
     public void sendMessage(String message) throws IOException, Exception {
-
-        //TODO add dividers or maybe size of next read
-
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         DataOutputStream dataStream = new DataOutputStream(byteStream);
 
@@ -214,15 +215,17 @@ public class SecureMulticastChat extends Thread {
 
         StringBuilder toBeEncryptedPayload = new StringBuilder();
 
+        /*Encrypted payload is only ever supposed to have the nonce and the message itself.
+           Plus it makes it easier to verify nonce legitimacy.
+         */
         toBeEncryptedPayload
-                .append(username)       // sender name
-                .append("simple msg")   // message
                 .append(nonce)          // NONCE
                 .append(message);       // msg data
 
         byte[] encryptedPayload = encryptMessage(confidentialityKey, toBeEncryptedPayload.toString());
 
         dataStream.writeInt(encryptedPayload.length);
+        dataStream.writeInt(nonce.length);
         dataStream.write(encryptedPayload); // writes the message
 
         // the HMAC proof
@@ -248,18 +251,21 @@ public class SecureMulticastChat extends Thread {
     //
     protected void processMessage(DataInputStream istream,
                                   InetAddress address,
-                                  int port) throws IOException {
+                                  int port) throws Exception {
 
         istream.readShort();
         long receivedMagicNumber = istream.readLong();
 
         if (receivedMagicNumber != CHAT_MAGIC_NUMBER) return;
 
+        //TODO username hashes will have to be flexible in a later stage
         byte[] usernameHashed = new byte[512]; // check the hash function
         if (istream.read(usernameHashed, 0, 512) <= 0) return;
         //maybe check if the hash is of the correct sender ???
 
         int sizeOfEncryptedMessage = istream.readInt();
+        int sizeOfNonce = istream.readInt();
+
         byte[] encryptedMessage = new byte[sizeOfEncryptedMessage];
         if (istream.read(encryptedMessage, 0 , sizeOfEncryptedMessage) <= 0) return;
 
@@ -267,7 +273,13 @@ public class SecureMulticastChat extends Thread {
         byte[] HMAC = new byte[sizeOfHMAC];
         if (istream.read(HMAC, 0 , sizeOfHMAC) <= 0) return;
 
+        //Decrypting the payload to check the nonce
+        byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
+        byte[] nonce = Arrays.copyOfRange(decryptedPayload, 0, sizeOfNonce);
 
+        //Nonce verification
+        if(nonces.contains(nonce)) return;
+        nonces.add(nonce);
 
 
 
