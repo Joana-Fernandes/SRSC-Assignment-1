@@ -102,7 +102,7 @@ public class SecureMulticastChat extends Thread {
 
         //We may need to test out this cipher stuff
         this.iv = Utils.hexToByteArray(ivString);
-        this.ivSpec  = new IvParameterSpec(ivBytes);
+        this.ivSpec  = new IvParameterSpec(iv);
         this.cipher  = Cipher.getInstance(encryptionAlg);
         this.nonces = new HashSet<>();
 
@@ -116,7 +116,7 @@ public class SecureMulticastChat extends Thread {
 
 
         // Building Header
-        this.hash = MessageDigest.getInstance("SHA512");
+        this.hash = MessageDigest.getInstance(nickHash);
         hash.update(username.getBytes(StandardCharsets.UTF_8));
         header = (short) 1 + CHAT_MAGIC_NUMBER + Arrays.toString(hash.digest());
 
@@ -311,7 +311,6 @@ public class SecureMulticastChat extends Thread {
 
         if (receivedMagicNumber != CHAT_MAGIC_NUMBER) return;
 
-        //TODO username hashes will have to be flexible in a later stage
         byte[] usernameHashed = new byte[512]; // check the hash function
         if (istream.read(usernameHashed, 0, 512) <= 0) return;
 
