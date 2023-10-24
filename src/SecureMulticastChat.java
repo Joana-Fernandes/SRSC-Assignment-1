@@ -172,6 +172,15 @@ public class SecureMulticastChat extends Thread {
         dataStream.writeInt(encryptedPayload.length);
         dataStream.write(encryptedPayload);
 
+        PrivateKey keyPriv = getPrivateKey(username);
+        Signature s = Signature.getInstance(signatureAlg);
+        s.initSign(keyPriv);
+        s.update(encryptedPayload);
+        byte[] digitalSignature = s.sign();
+
+        dataStream.writeInt(digitalSignature.length);
+        dataStream.write(digitalSignature);
+
         dataStream.close();
 
         byte[] data = byteStream.toByteArray();
@@ -201,9 +210,21 @@ public class SecureMulticastChat extends Thread {
 
         byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
 
+        int sigSize = istream.readInt();
+        byte[] signature = new byte[sigSize];
+        if(istream.read(signature,0,sigSize) <= 0) return;
+
         //Nonce verification
         if(nonces.contains(decryptedPayload)) return;
         nonces.add(decryptedPayload);
+
+        PublicKey senderKey = getPublicKey(name);
+        Signature s = Signature.getInstance(keyProps.getProperty(name + "alg"));
+        s.initVerify(senderKey);
+        s.update(encryptedMessage);
+        boolean verification = s.verify(signature);
+
+        if(!verification) return;
 
         try {
             listener.chatParticipantJoined(name, address, port);
@@ -226,6 +247,15 @@ public class SecureMulticastChat extends Thread {
         dataStream.writeInt(encryptedPayload.length);
         dataStream.write(encryptedPayload);
 
+        PrivateKey keyPriv = getPrivateKey(username);
+        Signature s = Signature.getInstance(signatureAlg);
+        s.initSign(keyPriv);
+        s.update(encryptedPayload);
+        byte[] digitalSignature = s.sign();
+
+        dataStream.writeInt(digitalSignature.length);
+        dataStream.write(digitalSignature);
+
         dataStream.close();
 
         byte[] data = byteStream.toByteArray();
@@ -243,7 +273,7 @@ public class SecureMulticastChat extends Thread {
 
         if (receivedMagicNumber != CHAT_MAGIC_NUMBER) return;
 
-        String username = istream.readUTF();
+        String sender = istream.readUTF();
 
         byte[] usernameHashed = new byte[512]; // check the hash function
         if (istream.read(usernameHashed, 0, 512) <= 0) return;
@@ -255,10 +285,21 @@ public class SecureMulticastChat extends Thread {
 
         byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
 
+        int sigSize = istream.readInt();
+        byte[] signature = new byte[sigSize];
+        if(istream.read(signature,0,sigSize) <= 0) return;
+
         //Nonce verification
         if(nonces.contains(decryptedPayload)) return;
         nonces.add(decryptedPayload);
 
+        PublicKey senderKey = getPublicKey(sender);
+        Signature s = Signature.getInstance(keyProps.getProperty(sender + "alg"));
+        s.initVerify(senderKey);
+        s.update(encryptedMessage);
+        boolean verification = s.verify(signature);
+
+        if(!verification) return;
         try {
             listener.chatParticipantLeft(username, address, port);
         } catch (Throwable e) {}
