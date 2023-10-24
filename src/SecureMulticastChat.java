@@ -80,7 +80,7 @@ public class SecureMulticastChat extends Thread {
 
     // Multicast Chat-Messaging
     public SecureMulticastChat(String username, InetAddress group, int port,
-                         int ttl, MulticastChatEventListener listener) throws IOException, NoSuchPaddingException, NoSuchAlgorithmException {
+                         int ttl, MulticastChatEventListener listener) throws Exception {
 
         this.username = username;
         this.group = group;
@@ -130,7 +130,7 @@ public class SecureMulticastChat extends Thread {
      * Sent notification when user wants to leave the Chat-messaging room
      */
 
-    public void terminate() throws IOException {
+    public void terminate() throws Exception {
         isActive = false;
         sendLeave();
     }
@@ -143,13 +143,31 @@ public class SecureMulticastChat extends Thread {
 
     // Send a JOIN message
     //
-    protected void sendJoin() throws IOException {
+    protected void sendJoin() throws Exception {
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         DataOutputStream dataStream = new DataOutputStream(byteStream);
 
+        dataStream.writeShort(1);
         dataStream.writeLong(CHAT_MAGIC_NUMBER);
         dataStream.writeInt(JOIN);
-        dataStream.writeUTF(username);
+        dataStream.write(hash.digest(username.getBytes(StandardCharsets.UTF_8)));
+
+        byte[] nonce = Utils.generateNonce();
+        byte[] encryptedPayload = encryptMessage(confidentialityKey, nonce.toString());
+
+        dataStream.writeInt(encryptedPayload.length);
+        dataStream.write(encryptedPayload);
+
+        int size1 = header.getBytes(StandardCharsets.UTF_8).length;
+        int size2 = encryptedPayload.length;
+        byte [] ola = new byte[size1 + size2];
+
+        System.arraycopy(header.getBytes(StandardCharsets.UTF_8), 0, ola, 0,size1);
+        System.arraycopy(encryptedPayload, 0, ola, size1, size2);
+        byte[] HMAC = hash.digest(ola);
+
+        dataStream.writeInt(HMAC.length);
+        dataStream.write(HMAC);
 
         dataStream.close();
 
@@ -171,13 +189,32 @@ public class SecureMulticastChat extends Thread {
     }
 
     // Send LEAVE
-    protected void sendLeave() throws IOException {
+    protected void sendLeave() throws Exception {
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         DataOutputStream dataStream = new DataOutputStream(byteStream);
 
+        dataStream.writeShort(1);
         dataStream.writeLong(CHAT_MAGIC_NUMBER);
         dataStream.writeInt(LEAVE);
-        dataStream.writeUTF(username);
+        dataStream.write(hash.digest(username.getBytes(StandardCharsets.UTF_8)));
+
+        byte[] nonce = Utils.generateNonce();
+        byte[] encryptedPayload = encryptMessage(confidentialityKey, nonce.toString());
+
+        dataStream.writeInt(encryptedPayload.length);
+        dataStream.write(encryptedPayload);
+
+        int size1 = header.getBytes(StandardCharsets.UTF_8).length;
+        int size2 = encryptedPayload.length;
+        byte [] ola = new byte[size1 + size2];
+
+        System.arraycopy(header.getBytes(StandardCharsets.UTF_8), 0, ola, 0,size1);
+        System.arraycopy(encryptedPayload, 0, ola, size1, size2);
+        byte[] HMAC = hash.digest(ola);
+
+        dataStream.writeInt(HMAC.length);
+        dataStream.write(HMAC);
+
         dataStream.close();
 
         byte[] data = byteStream.toByteArray();
@@ -408,11 +445,6 @@ public class SecureMulticastChat extends Thread {
         byte[] plainText = Utils.toByteArray(encryptedMessage);
         byte[] plaintextMessage = cipher.doFinal(plainText);
         return plaintextMessage;
-    }
-
-    private void verifyMessage(){
-        //TODO make sure message wasnt tampered with mac
-        return;
     }
 }
 
