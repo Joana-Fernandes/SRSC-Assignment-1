@@ -158,17 +158,6 @@ public class SecureMulticastChat extends Thread {
         dataStream.writeInt(encryptedPayload.length);
         dataStream.write(encryptedPayload);
 
-        int size1 = header.getBytes(StandardCharsets.UTF_8).length;
-        int size2 = encryptedPayload.length;
-        byte [] ola = new byte[size1 + size2];
-
-        System.arraycopy(header.getBytes(StandardCharsets.UTF_8), 0, ola, 0,size1);
-        System.arraycopy(encryptedPayload, 0, ola, size1, size2);
-        byte[] HMAC = hash.digest(ola);
-
-        dataStream.writeInt(HMAC.length);
-        dataStream.write(HMAC);
-
         dataStream.close();
 
         byte[] data = byteStream.toByteArray();
@@ -180,8 +169,27 @@ public class SecureMulticastChat extends Thread {
     // Process received JOIN message
     //
     protected void processJoin(DataInputStream istream, InetAddress address,
-                               int port) throws IOException {
+                               int port) throws Exception {
+        istream.readShort();
+        long receivedMagicNumber = istream.readLong();
+
+        if (receivedMagicNumber != CHAT_MAGIC_NUMBER) return;
+
         String name = istream.readUTF();
+
+        byte[] usernameHashed = new byte[512]; // check the hash function
+        if (istream.read(usernameHashed, 0, 512) <= 0) return;
+
+        int sizeOfEncryptedMessage = istream.readInt();
+
+        byte[] encryptedMessage = new byte[sizeOfEncryptedMessage];
+        if (istream.read(encryptedMessage, 0 , sizeOfEncryptedMessage) <= 0) return;
+
+        byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
+
+        //Nonce verification
+        if(nonces.contains(decryptedPayload)) return;
+        nonces.add(decryptedPayload);
 
         try {
             listener.chatParticipantJoined(name, address, port);
@@ -204,17 +212,6 @@ public class SecureMulticastChat extends Thread {
         dataStream.writeInt(encryptedPayload.length);
         dataStream.write(encryptedPayload);
 
-        int size1 = header.getBytes(StandardCharsets.UTF_8).length;
-        int size2 = encryptedPayload.length;
-        byte [] ola = new byte[size1 + size2];
-
-        System.arraycopy(header.getBytes(StandardCharsets.UTF_8), 0, ola, 0,size1);
-        System.arraycopy(encryptedPayload, 0, ola, size1, size2);
-        byte[] HMAC = hash.digest(ola);
-
-        dataStream.writeInt(HMAC.length);
-        dataStream.write(HMAC);
-
         dataStream.close();
 
         byte[] data = byteStream.toByteArray();
@@ -226,8 +223,27 @@ public class SecureMulticastChat extends Thread {
     // Processes a multicast chat LEAVE and notifies listeners
 
     protected void processLeave(DataInputStream istream, InetAddress address,
-                                int port) throws IOException {
+                                int port) throws Exception {
+        istream.readShort();
+        long receivedMagicNumber = istream.readLong();
+
+        if (receivedMagicNumber != CHAT_MAGIC_NUMBER) return;
+
         String username = istream.readUTF();
+
+        byte[] usernameHashed = new byte[512]; // check the hash function
+        if (istream.read(usernameHashed, 0, 512) <= 0) return;
+
+        int sizeOfEncryptedMessage = istream.readInt();
+
+        byte[] encryptedMessage = new byte[sizeOfEncryptedMessage];
+        if (istream.read(encryptedMessage, 0 , sizeOfEncryptedMessage) <= 0) return;
+
+        byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
+
+        //Nonce verification
+        if(nonces.contains(decryptedPayload)) return;
+        nonces.add(decryptedPayload);
 
         try {
             listener.chatParticipantLeft(username, address, port);
@@ -299,7 +315,6 @@ public class SecureMulticastChat extends Thread {
         //TODO username hashes will have to be flexible in a later stage
         byte[] usernameHashed = new byte[512]; // check the hash function
         if (istream.read(usernameHashed, 0, 512) <= 0) return;
-        //maybe check if the hash is of the correct sender ???
 
         int sizeOfEncryptedMessage = istream.readInt();
         int sizeOfNonce = istream.readInt();
