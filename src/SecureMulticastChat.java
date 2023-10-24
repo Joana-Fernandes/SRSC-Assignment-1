@@ -55,13 +55,6 @@ public class SecureMulticastChat extends Thread {
 
     protected boolean isActive;
 
-    //The IV I think we need, we'll have it properly within the config file later on, I'm just very very tired right now,
-    //and needed it to make the encryption/decryption methods.
-    byte[] ivBytes = new byte[] {
-            0x00, 0x01, 0x02, 0x03, 0x00, 0x00, 0x00, 0x01,
-            0x00, 0x01, 0x02, 0x03, 0x00, 0x00, 0x00, 0x01
-    };
-
     //Security related variables
     protected Properties securityProps;
     private String encryptionAlg;
