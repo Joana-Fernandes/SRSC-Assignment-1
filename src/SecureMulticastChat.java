@@ -287,14 +287,27 @@ public class SecureMulticastChat extends Thread {
            Plus it makes it easier to verify nonce legitimacy.
          */
         toBeEncryptedPayload
+                .append(username)
+                .append(MESSAGE)
                 .append(nonce)          // NONCE
                 .append(message);       // msg data
 
         byte[] encryptedPayload = encryptMessage(confidentialityKey, toBeEncryptedPayload.toString());
 
         dataStream.writeInt(encryptedPayload.length);
+        dataStream.writeInt(username.length());
         dataStream.writeInt(nonce.length);
         dataStream.write(encryptedPayload); // writes the message
+
+        //Digital Signature
+        PrivateKey keyPriv = getPrivateKey(username);
+        Signature s = Signature.getInstance(signatureAlg);
+        s.initSign(keyPriv);
+        s.update(encryptedPayload);
+        byte[] digitalSignature = s.sign();
+
+        dataStream.writeInt(digitalSignature.length);
+        dataStream.write(digitalSignature);
 
         // the HMAC proof
         int size1 = header.getBytes(StandardCharsets.UTF_8).length;
@@ -329,11 +342,17 @@ public class SecureMulticastChat extends Thread {
         byte[] usernameHashed = new byte[512]; // check the hash function
         if (istream.read(usernameHashed, 0, 512) <= 0) return;
 
+
         int sizeOfEncryptedMessage = istream.readInt();
+        int sizeOfUsername = istream.readInt();
         int sizeOfNonce = istream.readInt();
 
         byte[] encryptedMessage = new byte[sizeOfEncryptedMessage];
         if (istream.read(encryptedMessage, 0 , sizeOfEncryptedMessage) <= 0) return;
+
+        int sigSize = istream.readInt();
+        byte[] signature = new byte[sigSize];
+        if(istream.read(signature,0,sigSize) <= 0) return;
 
         int sizeOfHMAC = istream.readInt();
         byte[] HMAC = new byte[sizeOfHMAC];
@@ -341,7 +360,8 @@ public class SecureMulticastChat extends Thread {
 
         //Decrypting the payload to check the nonce
         byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
-        byte[] nonce = Arrays.copyOfRange(decryptedPayload, 0, sizeOfNonce);
+        byte[] senderByte = Arrays.copyOfRange(decryptedPayload, 0, sizeOfUsername);
+        byte[] nonce = Arrays.copyOfRange(decryptedPayload, sizeOfUsername + 1, sizeOfNonce);
         byte[] payloadMessage = Arrays.copyOfRange(decryptedPayload, sizeOfNonce, decryptedPayload.length);
 
         //Nonce verification
@@ -355,7 +375,16 @@ public class SecureMulticastChat extends Thread {
         mac.init(macKey);
         byte[] calculatedHMAC = mac.doFinal(payloadMessage);
 
-        if(!MessageDigest.isEqual(calculatedHMAC, HMAC)) return;
+        //Signature verification
+        String sender = senderByte.toString();
+        PublicKey senderKey = getPublicKey(sender);
+        Signature s = Signature.getInstance(keyProps.getProperty(sender + "alg"));
+        s.initVerify(senderKey);
+        s.update(encryptedMessage);
+        boolean verification = s.verify(signature);
+
+
+        if(!MessageDigest.isEqual(calculatedHMAC, HMAC) || !verification) return;
 
 
         String username = istream.readUTF();
