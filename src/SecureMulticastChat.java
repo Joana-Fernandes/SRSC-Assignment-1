@@ -67,9 +67,11 @@ public class SecureMulticastChat extends Thread {
     private String encryptionAlg;
     private String nickHash;
     private String macAlgorithm;
+    private String ivString;
     private SecretKey confidentialityKey;
     private SecretKey macKey;
     private IvParameterSpec ivSpec;
+    private byte[] iv;
     private Cipher cipher;
     private MessageDigest hash;
     private Set<byte[]> nonces;
@@ -87,18 +89,6 @@ public class SecureMulticastChat extends Thread {
         this.listener = listener;
         isActive = true;
 
-        //We may need to test out this cipher stuff
-        this.ivSpec  = new IvParameterSpec(ivBytes);
-        this.cipher  = Cipher.getInstance("AES/GCM/NoPadding");
-        this.nonces = new HashSet<>();
-
-        // create & configure multicast socket
-
-        msocket = new MulticastSocket(port);
-        msocket.setSoTimeout(DEFAULT_SOCKET_TIMEOUT_MILLIS);
-        msocket.setTimeToLive(ttl);
-        msocket.joinGroup(group);
-
         //Loading security setting from the config file
         securityProps = new Properties();
         try{
@@ -115,6 +105,22 @@ public class SecureMulticastChat extends Thread {
         this.macAlgorithm = securityProps.getProperty("MACALGORITHM");
         this.confidentialityKey = getSecretKey(securityProps.getProperty("CONFIDENTIALITY-KEY"));
         this.macKey = getSecretKey(securityProps.getProperty("MACKEY"));
+        this.ivString = securityProps.getProperty("IV");
+
+        //We may need to test out this cipher stuff
+        this.iv = Utils.hexToByteArray(ivString);
+        this.ivSpec  = new IvParameterSpec(ivBytes);
+        this.cipher  = Cipher.getInstance(encryptionAlg);
+        this.nonces = new HashSet<>();
+
+        // create & configure multicast socket
+
+        msocket = new MulticastSocket(port);
+        msocket.setSoTimeout(DEFAULT_SOCKET_TIMEOUT_MILLIS);
+        msocket.setTimeToLive(ttl);
+        msocket.joinGroup(group);
+
+
 
         // Building Header
         this.hash = MessageDigest.getInstance("SHA512");
