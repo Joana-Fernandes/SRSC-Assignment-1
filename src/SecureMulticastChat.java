@@ -9,8 +9,10 @@ package src;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.security.*;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Properties;
@@ -57,10 +59,12 @@ public class SecureMulticastChat extends Thread {
 
     //Security related variables
     protected Properties securityProps;
+    protected Properties keyProps;
     private String encryptionAlg;
     private String nickHash;
     private String macAlgorithm;
     private String ivString;
+    private String signatureAlg;
     private SecretKey confidentialityKey;
     private SecretKey macKey;
     private IvParameterSpec ivSpec;
@@ -92,6 +96,16 @@ public class SecureMulticastChat extends Thread {
             e.printStackTrace();
         }
 
+        //Loading public keys from the config file
+        keyProps = new Properties();
+        try{
+            FileInputStream input = new FileInputStream("publickeys.config");
+            keyProps.load(input);
+            input.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
         //Getting the stuff from the config file
         this.encryptionAlg = securityProps.getProperty("CONFIDENTIALITY");
         this.nickHash = securityProps.getProperty("HASHFORNICKNAMES");
@@ -99,6 +113,7 @@ public class SecureMulticastChat extends Thread {
         this.confidentialityKey = getSecretKey(securityProps.getProperty("CONFIDENTIALITY-KEY"));
         this.macKey = getSecretKey(securityProps.getProperty("MACKEY"));
         this.ivString = securityProps.getProperty("IV");
+        this.signatureAlg = securityProps.getProperty("SIGNATURE");
 
         //We may need to test out this cipher stuff
         this.iv = Utils.hexToByteArray(ivString);
@@ -458,6 +473,33 @@ public class SecureMulticastChat extends Thread {
         byte[] plainText = Utils.toByteArray(encryptedMessage);
         byte[] plaintextMessage = cipher.doFinal(plainText);
         return plaintextMessage;
+    }
+
+    /**
+     *
+     * @param username username of the sender
+     * @return the public key of the user
+     * @throws NoSuchAlgorithmException
+     * @throws InvalidKeySpecException
+     */
+    private PublicKey getPublicKey(String username) throws NoSuchAlgorithmException, InvalidKeySpecException {
+        String keyHex = keyProps.getProperty(username + "publickey");
+        byte[] keyBytes = Utils.hexToByteArray(keyHex);
+        String alg = keyProps.getProperty(username + "alg");
+        KeyFactory factory = KeyFactory.getInstance(alg);
+        X509EncodedKeySpec keySpec = new X509EncodedKeySpec(keyBytes);
+        PublicKey publicKey = factory.generatePublic(keySpec);
+        return publicKey;
+    }
+
+    private PrivateKey getPrivateKey(String username) throws NoSuchAlgorithmException, InvalidKeySpecException {
+        String keyHex = keyProps.getProperty(username + "privatekey"); // Load the private key in hexadecimal format
+        byte[] keyBytes = Utils.hexToByteArray(keyHex);
+        String alg = keyProps.getProperty(username + "alg"); // Algorithm used for the private key
+        KeyFactory factory = KeyFactory.getInstance(alg);
+        PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(keyBytes);
+        PrivateKey privateKey = factory.generatePrivate(keySpec);
+        return privateKey;
     }
 }
 
