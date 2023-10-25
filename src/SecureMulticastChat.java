@@ -6,21 +6,27 @@ package src;
     The alterations should be commented to the best of my abilities.
  */
 
+import org.bouncycastle.jce.ECNamedCurveTable;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
+import org.bouncycastle.jce.spec.ECNamedCurveSpec;
+import org.bouncycastle.util.test.FixedSecureRandom;
+import org.w3c.dom.css.Counter;
+
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
+import java.security.spec.ECPrivateKeySpec;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Properties;
-import java.util.Set;
+import java.util.*;
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -73,13 +79,13 @@ public class SecureMulticastChat extends Thread {
     private MessageDigest hash;
     private Set<byte[]> nonces;
 
+    private BouncyCastleProvider bc;
 
-    // Message Building related variables
-    private String header;
+
 
     // Multicast Chat-Messaging
     public SecureMulticastChat(String username, InetAddress group, int port,
-                         int ttl, MulticastChatEventListener listener) throws Exception {
+                         int ttl, MulticastChatEventListener listener) throws IOException {
 
         this.username = username;
         this.group = group;
@@ -89,7 +95,7 @@ public class SecureMulticastChat extends Thread {
         //Loading security setting from the config file
         securityProps = new Properties();
         try{
-            FileInputStream input = new FileInputStream("security.config");
+            FileInputStream input = new FileInputStream("src/security.config");
             securityProps.load(input);
             input.close();
         } catch (IOException e) {
@@ -99,7 +105,7 @@ public class SecureMulticastChat extends Thread {
         //Loading public keys from the config file
         keyProps = new Properties();
         try{
-            FileInputStream input = new FileInputStream("publickeys.config");
+            FileInputStream input = new FileInputStream("src/publickeys.config");
             keyProps.load(input);
             input.close();
         } catch (IOException e) {
@@ -114,11 +120,18 @@ public class SecureMulticastChat extends Thread {
         this.macKey = getSecretKey(securityProps.getProperty("MACKEY"));
         this.ivString = securityProps.getProperty("IV");
         this.signatureAlg = securityProps.getProperty("SIGNATURE");
+        this.bc = new BouncyCastleProvider();
+        Security.addProvider(bc);
 
         //We may need to test out this cipher stuff
         this.iv = Utils.hexToByteArray(ivString);
         this.ivSpec  = new IvParameterSpec(iv);
-        this.cipher  = Cipher.getInstance(encryptionAlg);
+        try {
+            this.hash = MessageDigest.getInstance(securityProps.getProperty("HASHFORNICKNAMES"));
+            this.cipher  = Cipher.getInstance(encryptionAlg);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
         this.nonces = new HashSet<>();
 
         // create & configure multicast socket
@@ -130,14 +143,13 @@ public class SecureMulticastChat extends Thread {
 
 
 
-        // Building Header
-        this.hash = MessageDigest.getInstance(nickHash);
-        hash.update(username.getBytes(StandardCharsets.UTF_8));
-        header = (short) 1 + CHAT_MAGIC_NUMBER + Arrays.toString(hash.digest());
-
         // start receive thread and send multicast join message
         start();
-        sendJoin();
+        try {
+            sendJoin();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     /**
@@ -161,13 +173,16 @@ public class SecureMulticastChat extends Thread {
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         DataOutputStream dataStream = new DataOutputStream(byteStream);
 
+        dataStream.writeInt(JOIN);
         dataStream.writeShort(1);
         dataStream.writeLong(CHAT_MAGIC_NUMBER);
-        dataStream.writeInt(JOIN);
-        dataStream.write(hash.digest(username.getBytes(StandardCharsets.UTF_8)));
+        byte [] hashedusername = hash.digest(username.getBytes(StandardCharsets.UTF_8));
+        System.out.println(hashedusername.length);
+        dataStream.write(hashedusername);
+        dataStream.writeUTF(username);
 
         byte[] nonce = Utils.generateNonce();
-        byte[] encryptedPayload = encryptMessage(confidentialityKey, nonce.toString());
+        byte[] encryptedPayload = encryptMessage(confidentialityKey, nonce);
 
         dataStream.writeInt(encryptedPayload.length);
         dataStream.write(encryptedPayload);
@@ -193,22 +208,25 @@ public class SecureMulticastChat extends Thread {
     //
     protected void processJoin(DataInputStream istream, InetAddress address,
                                int port) throws Exception {
+        // get version
         istream.readShort();
-        long receivedMagicNumber = istream.readLong();
 
+        // check Magic number
+        long receivedMagicNumber = istream.readLong();
         if (receivedMagicNumber != CHAT_MAGIC_NUMBER) return;
 
-        String name = istream.readUTF();
+        // check the hash function
+        byte[] usernameHashed = new byte[32];
+        if (istream.read(usernameHashed, 0, 32) <= 0) return;
 
-        byte[] usernameHashed = new byte[512]; // check the hash function
-        if (istream.read(usernameHashed, 0, 512) <= 0) return;
+        String name = istream.readUTF();
 
         int sizeOfEncryptedMessage = istream.readInt();
 
         byte[] encryptedMessage = new byte[sizeOfEncryptedMessage];
         if (istream.read(encryptedMessage, 0 , sizeOfEncryptedMessage) <= 0) return;
 
-        byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
+        byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage);
 
         int sigSize = istream.readInt();
         byte[] signature = new byte[sigSize];
@@ -222,9 +240,8 @@ public class SecureMulticastChat extends Thread {
         Signature s = Signature.getInstance(keyProps.getProperty(name + "alg"));
         s.initVerify(senderKey);
         s.update(encryptedMessage);
-        boolean verification = s.verify(signature);
 
-        if(!verification) return;
+        if(!s.verify(signature)) return;
 
         try {
             listener.chatParticipantJoined(name, address, port);
@@ -236,13 +253,15 @@ public class SecureMulticastChat extends Thread {
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         DataOutputStream dataStream = new DataOutputStream(byteStream);
 
+        dataStream.writeInt(LEAVE);
         dataStream.writeShort(1);
         dataStream.writeLong(CHAT_MAGIC_NUMBER);
-        dataStream.writeInt(LEAVE);
         dataStream.write(hash.digest(username.getBytes(StandardCharsets.UTF_8)));
+        dataStream.writeUTF(username);
+
 
         byte[] nonce = Utils.generateNonce();
-        byte[] encryptedPayload = encryptMessage(confidentialityKey, nonce.toString());
+        byte[] encryptedPayload = encryptMessage(confidentialityKey, nonce);
 
         dataStream.writeInt(encryptedPayload.length);
         dataStream.write(encryptedPayload);
@@ -268,22 +287,25 @@ public class SecureMulticastChat extends Thread {
 
     protected void processLeave(DataInputStream istream, InetAddress address,
                                 int port) throws Exception {
+        // get version
         istream.readShort();
-        long receivedMagicNumber = istream.readLong();
 
+        // check Magic Number
+        long receivedMagicNumber = istream.readLong();
         if (receivedMagicNumber != CHAT_MAGIC_NUMBER) return;
 
-        String sender = istream.readUTF();
+        // check the hash function
+        byte[] usernameHashed = new byte[32];
+        if (istream.read(usernameHashed, 0, 32) <= 0) return;
 
-        byte[] usernameHashed = new byte[512]; // check the hash function
-        if (istream.read(usernameHashed, 0, 512) <= 0) return;
+        String sender = istream.readUTF();
 
         int sizeOfEncryptedMessage = istream.readInt();
 
         byte[] encryptedMessage = new byte[sizeOfEncryptedMessage];
         if (istream.read(encryptedMessage, 0 , sizeOfEncryptedMessage) <= 0) return;
 
-        byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
+        byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage);
 
         int sigSize = istream.readInt();
         byte[] signature = new byte[sigSize];
@@ -297,9 +319,9 @@ public class SecureMulticastChat extends Thread {
         Signature s = Signature.getInstance(keyProps.getProperty(sender + "alg"));
         s.initVerify(senderKey);
         s.update(encryptedMessage);
-        boolean verification = s.verify(signature);
 
-        if(!verification) return;
+        if(!s.verify(signature)) return;
+
         try {
             listener.chatParticipantLeft(username, address, port);
         } catch (Throwable e) {}
@@ -313,31 +335,32 @@ public class SecureMulticastChat extends Thread {
 
 
         // writes the header
+        dataStream.writeInt(MESSAGE);
         dataStream.writeShort(1);
         dataStream.writeLong(CHAT_MAGIC_NUMBER);
         dataStream.write(hash.digest(username.getBytes(StandardCharsets.UTF_8)));
 
+        byte[] headerBytes = byteStream.toByteArray();
 
         // the encryption of the message
+        ByteArrayOutputStream toBeEncryptedPayload = new ByteArrayOutputStream();
+        DataOutputStream toBeEncryptedPayloadDataStream = new DataOutputStream(toBeEncryptedPayload);
 
+        // username
+        toBeEncryptedPayloadDataStream.writeUTF(username);
+
+        // NONCE
         byte[] nonce = Utils.generateNonce();
+        toBeEncryptedPayloadDataStream.write(nonce.length);
+        toBeEncryptedPayloadDataStream.write(nonce);
 
-        StringBuilder toBeEncryptedPayload = new StringBuilder();
+        // msg data
+        toBeEncryptedPayloadDataStream.writeUTF(message);
 
-        /*Encrypted payload is only ever supposed to have the nonce and the message itself.
-           Plus it makes it easier to verify nonce legitimacy.
-         */
-        toBeEncryptedPayload
-                .append(username)
-                .append(MESSAGE)
-                .append(nonce)          // NONCE
-                .append(message);       // msg data
 
-        byte[] encryptedPayload = encryptMessage(confidentialityKey, toBeEncryptedPayload.toString());
+        byte[] encryptedPayload = encryptMessage(confidentialityKey, toBeEncryptedPayload.toByteArray());
 
         dataStream.writeInt(encryptedPayload.length);
-        dataStream.writeInt(username.length());
-        dataStream.writeInt(nonce.length);
         dataStream.write(encryptedPayload); // writes the message
 
         //Digital Signature
@@ -351,13 +374,13 @@ public class SecureMulticastChat extends Thread {
         dataStream.write(digitalSignature);
 
         // the HMAC proof
-        int size1 = header.getBytes(StandardCharsets.UTF_8).length;
-        int size2 = encryptedPayload.length;
-        byte [] ola = new byte[size1 + size2];
+        int headerLength = headerBytes.length;
+        int encryptedPayloadLength = encryptedPayload.length;
+        byte [] toBeHMACed = new byte[headerLength + encryptedPayloadLength];
 
-        System.arraycopy(header.getBytes(StandardCharsets.UTF_8), 0, ola, 0,size1);
-        System.arraycopy(encryptedPayload, 0, ola, size1, size2);
-        byte[] HMAC = hash.digest(ola);
+        System.arraycopy(headerBytes, 0, toBeHMACed, 0,headerLength);
+        System.arraycopy(encryptedPayload, 0, toBeHMACed, headerLength, encryptedPayloadLength);
+        byte[] HMAC = hash.digest(toBeHMACed);
 
         dataStream.writeInt(HMAC.length);
         dataStream.write(HMAC); // writes the HMAC
@@ -375,64 +398,80 @@ public class SecureMulticastChat extends Thread {
                                   InetAddress address,
                                   int port) throws Exception {
 
-        istream.readShort();
+        ByteArrayOutputStream HMACCheckBytes = new ByteArrayOutputStream();
+        DataOutputStream HMACCheckDataStream = new DataOutputStream(HMACCheckBytes);
+
+        // Message type
+        HMACCheckDataStream.writeInt(MESSAGE);
+
+        // version
+        short version = istream.readShort();
+        HMACCheckDataStream.writeShort(version);
+
+        // magic number
         long receivedMagicNumber = istream.readLong();
-
         if (receivedMagicNumber != CHAT_MAGIC_NUMBER) return;
+        HMACCheckDataStream.writeLong(receivedMagicNumber);
 
-        byte[] usernameHashed = new byte[512]; // check the hash function
-        if (istream.read(usernameHashed, 0, 512) <= 0) return;
+        // check the hash function
+        byte[] usernameHashed = new byte[32];
+        if (istream.read(usernameHashed, 0, 32) <= 0) return;
+        HMACCheckDataStream.write(usernameHashed);
 
-
+        // get encrypted envelope
         int sizeOfEncryptedMessage = istream.readInt();
-        int sizeOfUsername = istream.readInt();
-        int sizeOfNonce = istream.readInt();
-
         byte[] encryptedMessage = new byte[sizeOfEncryptedMessage];
         if (istream.read(encryptedMessage, 0 , sizeOfEncryptedMessage) <= 0) return;
+        HMACCheckDataStream.write(encryptedMessage);
 
+        // get sig part
         int sigSize = istream.readInt();
         byte[] signature = new byte[sigSize];
         if(istream.read(signature,0,sigSize) <= 0) return;
 
+        // get and verify HMAC
         int sizeOfHMAC = istream.readInt();
         byte[] HMAC = new byte[sizeOfHMAC];
         if (istream.read(HMAC, 0 , sizeOfHMAC) <= 0) return;
 
+        Mac mac = Mac.getInstance(macAlgorithm);
+        mac.init(macKey);
+        byte[] calculatedHMAC = mac.doFinal(HMACCheckBytes.toByteArray());
+
+        // checks if tampered
+        if (!MessageDigest.isEqual(calculatedHMAC, HMAC)) return;
+
+
         //Decrypting the payload to check the nonce
-        byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage.toString());
-        byte[] senderByte = Arrays.copyOfRange(decryptedPayload, 0, sizeOfUsername);
-        byte[] nonce = Arrays.copyOfRange(decryptedPayload, sizeOfUsername + 1, sizeOfNonce);
-        byte[] payloadMessage = Arrays.copyOfRange(decryptedPayload, sizeOfNonce, decryptedPayload.length);
+        byte[] decryptedPayload = decryptMessage(confidentialityKey, encryptedMessage);
+
+        ByteArrayInputStream decryptedPayloadBytes = new ByteArrayInputStream(decryptedPayload);
+        DataInputStream decryptedPayloadDataStream = new DataInputStream(decryptedPayloadBytes);
+
+        // read username
+        String senderUsername = decryptedPayloadDataStream.readUTF();
+
+        // read NONCE
+        int sizeOfNonce = decryptedPayloadDataStream.readInt();
+        byte[] nonce = new byte[sizeOfNonce];
+
+        // read message
+        String messageReceived = decryptedPayloadDataStream.readUTF();
 
         //Nonce verification
         if(nonces.contains(nonce)) return;
         nonces.add(nonce);
 
-
-        //HMAC verification
-        //Please do check for any errors here
-        Mac mac = Mac.getInstance(macAlgorithm);
-        mac.init(macKey);
-        byte[] calculatedHMAC = mac.doFinal(payloadMessage);
-
         //Signature verification
-        String sender = senderByte.toString();
-        PublicKey senderKey = getPublicKey(sender);
-        Signature s = Signature.getInstance(keyProps.getProperty(sender + "alg"));
+        PublicKey senderKey = getPublicKey(senderUsername);
+        Signature s = Signature.getInstance(keyProps.getProperty(senderUsername + "alg"));
         s.initVerify(senderKey);
         s.update(encryptedMessage);
-        boolean verification = s.verify(signature);
 
-
-        if(!MessageDigest.isEqual(calculatedHMAC, HMAC) || !verification) return;
-
-
-        String username = istream.readUTF();
-        String message = istream.readUTF();
+        if(!s.verify(signature)) return;
 
         try {
-            listener.chatMessageReceived(username, address, port, message);
+            listener.chatMessageReceived(senderUsername, address, port, messageReceived);
         } catch (Throwable e) {}
     }
 
@@ -456,15 +495,6 @@ public class SecureMulticastChat extends Thread {
                 DataInputStream istream =
                         new DataInputStream(new ByteArrayInputStream(packet.getData(),
                                 packet.getOffset(), packet.getLength()));
-
-                short version = istream.readShort();
-                long magic = istream.readLong();
-
-                // Only accepts CHAT-MAGIC-NUMBER of the Chat
-                if (magic != CHAT_MAGIC_NUMBER) {
-                    continue;
-
-                }
 
                 // Let's analyze the received payload and msg types in rceoved datagram
                 int opCode = istream.readInt();
@@ -511,9 +541,8 @@ public class SecureMulticastChat extends Thread {
         byte [] keyBytes = Utils.toByteArray(hexKey);
 
         //This *should* work to be more flexible with the encryption algorithms, but if anything goes wrong, check this first
-        SecretKey key = new SecretKeySpec(keyBytes, encryptionAlg);
 
-        return key;
+        return new SecretKeySpec(keyBytes, encryptionAlg.split("/")[0]);
     }
 
     /**
@@ -523,11 +552,16 @@ public class SecureMulticastChat extends Thread {
      * @return the encrypted message
      * @throws Exception
      */
-    private byte[] encryptMessage(SecretKey key, String message) throws Exception{
-        cipher.init(Cipher.ENCRYPT_MODE, key, ivSpec);
-        byte[] cipherText = Utils.toByteArray(message);
-        byte[] encryptedMessage = cipher.doFinal(cipherText);
-        return encryptedMessage;
+    private byte[] encryptMessage(SecretKey key, byte[] message) throws Exception{
+        if(encryptionAlg.contains("GCM")) {
+            GCMParameterSpec parameterSpec = new GCMParameterSpec(128, iv);
+            cipher.init(Cipher.ENCRYPT_MODE, key, parameterSpec);
+        } else {
+            cipher.init(Cipher.ENCRYPT_MODE, key, ivSpec);
+        }
+
+
+        return cipher.doFinal(message);
 
     }
 
@@ -538,11 +572,14 @@ public class SecureMulticastChat extends Thread {
      * @return the message in plaintext
      * @throws Exception
      */
-    private byte[] decryptMessage(SecretKey key, String encryptedMessage) throws Exception{
-        cipher.init(Cipher.DECRYPT_MODE, key, ivSpec);
-        byte[] plainText = Utils.toByteArray(encryptedMessage);
-        byte[] plaintextMessage = cipher.doFinal(plainText);
-        return plaintextMessage;
+    private byte[] decryptMessage(SecretKey key, byte[] encryptedMessage) throws Exception{
+        if(encryptionAlg.contains("GCM")) {
+            GCMParameterSpec parameterSpec = new GCMParameterSpec(128, iv);
+            cipher.init(Cipher.DECRYPT_MODE, key, parameterSpec);
+        }else {
+            cipher.init(Cipher.DECRYPT_MODE, key, ivSpec);
+        }
+        return cipher.doFinal(encryptedMessage);
     }
 
     /**
@@ -556,7 +593,7 @@ public class SecureMulticastChat extends Thread {
         String keyHex = keyProps.getProperty(username + "publickey");
         byte[] keyBytes = Utils.hexToByteArray(keyHex);
         String alg = keyProps.getProperty(username + "alg");
-        KeyFactory factory = KeyFactory.getInstance(alg);
+        KeyFactory factory = KeyFactory.getInstance(alg, bc);
         X509EncodedKeySpec keySpec = new X509EncodedKeySpec(keyBytes);
         PublicKey publicKey = factory.generatePublic(keySpec);
         return publicKey;
@@ -566,10 +603,10 @@ public class SecureMulticastChat extends Thread {
         String keyHex = keyProps.getProperty(username + "privatekey"); // Load the private key in hexadecimal format
         byte[] keyBytes = Utils.hexToByteArray(keyHex);
         String alg = keyProps.getProperty(username + "alg"); // Algorithm used for the private key
-        KeyFactory factory = KeyFactory.getInstance(alg);
+        KeyFactory factory = KeyFactory.getInstance(alg, bc);
         PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(keyBytes);
         PrivateKey privateKey = factory.generatePrivate(keySpec);
+
         return privateKey;
     }
 }
-
