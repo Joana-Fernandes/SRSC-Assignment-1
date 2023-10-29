@@ -15,12 +15,10 @@ import org.w3c.dom.css.Counter;
 
 import java.io.*;
 import java.net.*;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
-import java.security.spec.ECPrivateKeySpec;
-import java.security.spec.InvalidKeySpecException;
-import java.security.spec.PKCS8EncodedKeySpec;
-import java.security.spec.X509EncodedKeySpec;
+import java.security.spec.*;
 import java.util.*;
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
@@ -553,6 +551,10 @@ public class SecureMulticastChat extends Thread {
      * @throws Exception
      */
     private byte[] encryptMessage(SecretKey key, byte[] message) throws Exception{
+        SecureRandom secureRandom = new SecureRandom();
+        byte[] iv = new byte[128]; //NEVER REUSE THIS IV WITH SAME KEY
+        secureRandom.nextBytes(iv);
+
         if(encryptionAlg.contains("GCM")) {
             GCMParameterSpec parameterSpec = new GCMParameterSpec(128, iv);
             cipher.init(Cipher.ENCRYPT_MODE, key, parameterSpec);
@@ -560,8 +562,14 @@ public class SecureMulticastChat extends Thread {
             cipher.init(Cipher.ENCRYPT_MODE, key, ivSpec);
         }
 
+        // We added the IV in plane to the encryption payload,
+        byte[] cipherText = cipher.doFinal(message);
 
-        return cipher.doFinal(message);
+        ByteBuffer byteBuffer = ByteBuffer.allocate(iv.length + cipherText.length);
+        byteBuffer.put(iv);
+        byteBuffer.put(cipherText);
+
+        return byteBuffer.array();
 
     }
 
@@ -573,13 +581,14 @@ public class SecureMulticastChat extends Thread {
      * @throws Exception
      */
     private byte[] decryptMessage(SecretKey key, byte[] encryptedMessage) throws Exception{
+        AlgorithmParameterSpec gcmIv = new GCMParameterSpec(128, encryptedMessage, 0, 128);
         if(encryptionAlg.contains("GCM")) {
-            GCMParameterSpec parameterSpec = new GCMParameterSpec(128, iv);
-            cipher.init(Cipher.DECRYPT_MODE, key, parameterSpec);
+            cipher.init(Cipher.DECRYPT_MODE, key, gcmIv);
+            return cipher.doFinal(encryptedMessage, 128, encryptedMessage.length-128);
         }else {
             cipher.init(Cipher.DECRYPT_MODE, key, ivSpec);
+            return cipher.doFinal(encryptedMessage);
         }
-        return cipher.doFinal(encryptedMessage);
     }
 
     /**
